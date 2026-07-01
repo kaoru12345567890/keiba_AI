@@ -146,10 +146,10 @@ def add_features(t_df):
         t_df[f'脚質{i}_割合'] = t_df[f'脚質{i}_頭数'] / t_df['出走数'].replace(0, 1)
     
     # <新しく追加した特徴量のリスト>
-    df['騎手_競馬場_芝ダート'] = df['騎手'].astype(str) + '_' + df['場所'] + '_' + df['芝ダート']
-    df['騎手_競馬場_芝ダート_回り'] = df['騎手_競馬場_芝ダート'] + '_' + df['回り']
+    t_df['騎手_競馬場_芝ダート'] = t_df['騎手'].astype(str) + '_' + t_df['場所'] + '_' + t_df['芝ダート']
+    t_df['騎手_競馬場_芝ダート_回り'] = t_df['騎手_競馬場_芝ダート'] + '_' + t_df['回り']
     # 脚質は「脚質スコア」や「脚質コード」を使います
-    df['騎手_競馬場_芝ダート_回り_脚質'] = (df['騎手_競馬場_芝ダート_回り'] + '_' + df['脚質ラベル'].astype(str))
+    t_df['騎手_競馬場_芝ダート_回り_脚質'] = (t_df['騎手_競馬場_芝ダート_回り'] + '_' + t_df['脚質ラベル'].astype(str))
 
 
 
@@ -264,7 +264,11 @@ print("統計辞書の作成中...")
 # 最終的な統計量を計算
 stats_dict = {
     'course_frame_rate': df.groupby('course_frame_key')['着順'].apply(lambda x: (x <= 3).mean()).to_dict(),
-    'course_style_rate': df.groupby('course_style_key')['着順'].apply(lambda x: (x <= 3).mean()).to_dict()
+    'course_style_rate': df.groupby('course_style_key')['着順'].apply(lambda x: (x <= 3).mean()).to_dict(),
+    # 騎手 × 場所 × 芝ダート の組み合わせ
+    'jockey_place_turf_dirt_rate': df.groupby(['騎手_競馬場_芝ダート'])['着順'].apply(lambda x: (x <= 3).mean()).to_dict(),
+    # 調教師も同様
+    'trainer_place_turf_dirt_rate': df.groupby(['調教師名', '場所', '芝ダート'])['着順'].apply(lambda x: (x <= 3).mean()).to_dict()
 }
 joblib.dump(stats_dict, 'stats_dict.pkl')
 print("統計辞書を保存しました。")
