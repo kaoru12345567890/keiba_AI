@@ -10,7 +10,7 @@ def merge_keiba_data(base_directory):
     # パス例: C:\keiba_AI\regetData\新潟\2026.csv
     search_path = os.path.join(base_directory, "*", "2026.csv")
     files = glob.glob(search_path)
-    
+    print(os.path.exists(base_dir))
     print(f"見つかったファイル数: {len(files)}")
     
     for file in files:
@@ -35,7 +35,7 @@ def merge_keiba_data(base_directory):
         merged_df = pd.concat(all_data, ignore_index=True)
         
         # 保存先 (基底ディレクトリと同じ場所に保存)
-        output_path = os.path.join(base_directory, "all_2026_merged.csv")
+        output_path = os.path.join(r"C:\keiba_AI\newget", "all_2026_merged.csv")
         merged_df.to_csv(output_path, index=False, encoding='utf-8-sig')
         print(f"統合完了: {output_path}")
     else:
@@ -44,5 +44,5 @@ def merge_keiba_data(base_directory):
 # 実行部
 if __name__ == "__main__":
     # ユーザー様の環境に合わせてパスを指定してください
-    base_dir = r"C:\keiba_AI\regetData"
+    base_dir = r"C:\keiba_AI\newget\regetData"
     merge_keiba_data(base_dir)

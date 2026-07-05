@@ -38,7 +38,7 @@ from sklearn.model_selection import KFold
 
 # 1. 初期ファイル読み込み
 print("データ読み込み中...")
-df = pd.read_csv('processed_12_data.csv', low_memory=False)
+df = pd.read_csv(r'C:\keiba_AI\final\processed_12_data.csv', low_memory=False)
 
 # 数字化処理（floatに変換）
 print("数値化処理中...")
@@ -184,6 +184,11 @@ def add_features(t_df):
     t_df['騙馬斤量_rel'] = t_df['斤量_rel'].astype(str)+ '_' + t_df['騙馬年齢'].astype(str)
     t_df['牝馬斤量_rel'] = t_df['斤量_rel'].astype(str)+ '_' + t_df['牝馬年齢'].astype(str)
     t_df['牡馬斤量_rel'] = t_df['斤量_rel'].astype(str)+ '_' + t_df['牡馬年齢'].astype(str)
+
+#過去3レース分のレースランク、距離、芝ダート、着順、脚質が欲しい。
+#あと、前走からの日数があるといいかも？
+#
+
 
     return t_df
 
@@ -510,28 +515,36 @@ def evaluate_and_print_results(test_df, target_year):
 
 def apply_jockey_boost(local_df):
     """
-    騎手のefficiencyを計算し、それに基づいてModel_Aを補正する関数
+    騎手のefficiencyに基づき、シグモイド関数で滑らかな補正倍率を計算する
     """
-    # 1. 騎手ごとのefficiency（実力）を計算
+    # 1. 騎手ごとのefficiencyを計算
     jockey_stats = local_df.groupby('騎手').agg({
         '着順': lambda x: (x <= 3).sum(),
         '単勝': lambda x: (1 / x).sum()
     })
-    # 0除算を防ぐため、期待値が0の場合は除外する
     jockey_stats['efficiency'] = jockey_stats['着順'] / jockey_stats['単勝'].replace(0, 1)
     
-    # 2. 補正用の内部関数
-    def calculate_boost(row):
-        jockey = row['騎手']
-        if jockey in jockey_stats.index:
-            eff = jockey_stats.loc[jockey, 'efficiency']
-            # 効率が2.0以上ならボーナスを加算
-            if eff > 2.0: #ここを自動化したほうがいいらしい
-                return row['Model_A'] * 1.1
-        return row['Model_A']
+    # 2. シグモイド関数による滑らかな重み付け
+    # efficiencyの平均値を中央値（中心点x0）として設定
+    x0 = jockey_stats['efficiency'].mean()
+    # kは曲線の急峻さ（大きいほど閾値に近い動きになる）
+    k = 0.5 
+    
+    # シグモイドで 0.5〜1.0 の値を生成し、それを倍率として活用
+    # 補正倍率を 1.0 〜 1.2 の間で変動させる設計です
+    def get_sigmoid_boost(eff):
+        sigmoid_val = 1 / (1 + np.exp(-k * (eff - x0)))
+        # 1.0〜1.2倍の間で調整（最小値1.0, 最大値1.2）
+        return 1.0 + (sigmoid_val * 0.2)
 
+    # 各騎手のefficiencyから倍率を計算
+    boost_map = {
+        jockey: get_sigmoid_boost(eff)
+        for jockey, eff in jockey_stats['efficiency'].items()
+    }
+    
     # 3. 補正を適用
-    local_df['Model_A'] = local_df.apply(calculate_boost, axis=1)
+    local_df['Model_A'] = local_df['Model_A'] * local_df['騎手'].map(boost_map).fillna(1.0)
     
     return local_df
 
