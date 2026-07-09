@@ -78,7 +78,7 @@ def run_task():
         print("createnewfulldata.pyの実行が完了しました。")
 
         # 2. ディレクトリBへ移動してB.pyを実行
-        print("--- ステップ5: .pyを実行中 ---")
+        print("--- ステップ5: awszawsz.pyを実行中 ---")
         os.chdir(dir_path_b)
         subprocess.run(["python", "awszawsz.py"], check=True)
         print("B.pyの実行が完了しました。")

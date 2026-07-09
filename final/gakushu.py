@@ -112,7 +112,7 @@ def apply_race_conditions(t_df):
 
 #特徴量作成
 print("特徴量作成中...")
-df['クラス_ランク'] = df.apply(get_class_rank_auto, axis=1)
+# df['クラス_ランク'] = df.apply(get_class_rank_auto, axis=1)
 df['is_新馬戦'] = df['レース名'].astype(str).apply(lambda x: 1 if '新馬' in x else 0)
 df = apply_race_conditions(df)
 
@@ -185,9 +185,9 @@ def add_features(t_df):
     t_df['牝馬斤量_rel'] = t_df['斤量_rel'].astype(str)+ '_' + t_df['牝馬年齢'].astype(str)
     t_df['牡馬斤量_rel'] = t_df['斤量_rel'].astype(str)+ '_' + t_df['牡馬年齢'].astype(str)
 
-#過去3レース分のレースランク、距離、芝ダート、着順、脚質が欲しい。
-#あと、前走からの日数があるといいかも？
-#
+    #過去3レース分のレースランク、距離、芝ダート、着順、脚質が欲しい。
+    #あと、前走からの日数があるといいかも？
+    #
 
 
     return t_df
@@ -254,7 +254,9 @@ categorical_cols = [
     '調教師名_所属','調教師名_is_新馬戦','騎手_is_新馬戦','調教師名_is_ハンデ戦','騎手_is_ハンデ戦',
     'hakodate_agari_factor', '調教師名_is_牝馬限定','騎手_is_牝馬限定','調教師名_斤量_ルール',
     '騎手_斤量_ルール','距離_脚質_馬場状態','距離_脚質','騙馬年齢','牝馬年齢','牡馬年齢',
-    '騙馬斤量_rel','牝馬斤量_rel','牡馬斤量_rel'
+    '騙馬斤量_rel','牝馬斤量_rel','牡馬斤量_rel',
+    '1走前_芝ダート','2走前_芝ダート','3走前_芝ダート',
+    '1走前_着順','2走前_着順','3走前_着順'
 ]
 
 encoders = {} # エンコーダーを保存する辞書
