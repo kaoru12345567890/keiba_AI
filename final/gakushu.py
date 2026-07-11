@@ -7,7 +7,9 @@
 # 回り,出走数,着順,枠番,馬番,馬名,性別年齢,斤量,騎手,
 # タイム,着差,ペース,通過順,上り3ハロン,単勝,人気,馬体重,体重増減,
 # 所属,調教師名,馬主,賞金,脚質スコア,脚質ラベル,上がり偏差値,性別,年齢,
-# 過去出走回数,過去平均着順,過去連対率,過去複勝率,過去平均上がり偏差値
+# 過去出走回数,過去平均着順,過去連対率,過去複勝率,過去平均上がり偏差値,
+#   ->増えたよまあ全部使おうかな
+#  
 #-----------------------------------------
 #　　　　＜リークの可能性がある要素＞
 # (着順),上り3ハロン,単勝,人気,上がり偏差値,タイム,ペース,
@@ -172,7 +174,7 @@ def add_features(t_df):
     t_df['騎手_is_ハンデ戦'] = t_df['is_ハンデ戦'].astype(str) + '_' + t_df['騎手'].astype(str)
     t_df['調教師名_斤量_ルール'] = t_df['斤量_ルール'].astype(str) + '_' + t_df['調教師名'].astype(str)
     t_df['騎手_斤量_ルール'] = t_df['斤量_ルール'].astype(str) + '_' + t_df['騎手'].astype(str)
-    t_df['hakodate_agari_factor'] = t_df['is_hakodate'].astype(str) + '_' + t_df['jockey_trainer'].astype(str)
+    t_df['hakodate_jockey_trainer'] = t_df['is_hakodate'].astype(str) + '_' + t_df['jockey_trainer'].astype(str)
     t_df['距離_脚質'] = t_df['距離'].astype(str) + '_' + t_df['脚質ラベル'].astype(str)
     t_df['距離_脚質_馬場状態'] = t_df['距離_脚質'].astype(str)+ '_' + t_df['馬場状態'].astype(str)
     t_df['is_senba'] = (t_df['性別'] == 1).astype(int)  # セン馬
@@ -185,7 +187,7 @@ def add_features(t_df):
     t_df['牝馬斤量_rel'] = t_df['斤量_rel'].astype(str)+ '_' + t_df['牝馬年齢'].astype(str)
     t_df['牡馬斤量_rel'] = t_df['斤量_rel'].astype(str)+ '_' + t_df['牡馬年齢'].astype(str)
 
-    #過去3レース分のレースランク、距離、芝ダート、着順、脚質が欲しい。
+    #過去3レース分のレースランク、距離、芝ダート、着順、脚質が欲しい。→作った。
     #あと、前走からの日数があるといいかも？
     #
 
@@ -252,7 +254,7 @@ categorical_cols = [
     '騎手_競馬場_芝ダート',# '騎手_競馬場_芝ダート_回り','騎手_競馬場_芝ダート_回り_脚質', 
     'jockey_脚質', '場所_脚質', '馬場状態_脚質', '場所_芝ダート_馬場状態','天気_脚質', '天気_騎手',
     '調教師名_所属','調教師名_is_新馬戦','騎手_is_新馬戦','調教師名_is_ハンデ戦','騎手_is_ハンデ戦',
-    'hakodate_agari_factor', '調教師名_is_牝馬限定','騎手_is_牝馬限定','調教師名_斤量_ルール',
+    'hakodate_jockey_trainer', '調教師名_is_牝馬限定','騎手_is_牝馬限定','調教師名_斤量_ルール',
     '騎手_斤量_ルール','距離_脚質_馬場状態','距離_脚質','騙馬年齢','牝馬年齢','牡馬年齢',
     '騙馬斤量_rel','牝馬斤量_rel','牡馬斤量_rel',
     '1走前_芝ダート','2走前_芝ダート','3走前_芝ダート',
@@ -373,7 +375,7 @@ feat_base = [c for c in df.columns if c not in drop_cols]
 
 all_results = []
 print("--- 統合適性スコアを含む学習パイプライン実行中 ---")
-years = sorted(df['年'].unique())
+years = [y for y in sorted(df['年'].unique()) if y >= 2021]
 
 # 全ての年度を回す前に、あらかじめ「各年度の予測値」を保存する箱を用意する
 meta_train_features = [] # データフレームのリストで保持
@@ -472,7 +474,7 @@ def evaluate_and_print_results(test_df, target_year):
     全体の評価、開催地別の評価、および外した馬の分析を行う関数
     """
     test_df['place_code'] = test_df['レースID'].astype(str).str[4:6]
-    models = ['Model_A', 'Model_B', 'Model_C']
+    models = ['Model_A', 'Model_B', 'Model_C', 'Model_D' ]
     
     # 1. 全体の評価
     print(f"\n=== {target_year}年 全体評価 ===")
@@ -589,9 +591,10 @@ def apply_final_correction(local_df):
 
 
 for target_year in tqdm(years, desc="年度別学習"):
-    # データを分割
-    train = df[df['年'] < target_year].copy()
+    # 2010年から「テストする年の前年まで」をすべて学習データにする
+    train = df[(df['年'] >= 2010) & (df['年'] < target_year)].copy()
     test = df[df['年'] == target_year].copy()
+    
     if train.empty or test.empty: continue
     
     # 統計量の計算（必ずtrainのみから計算すること！）
@@ -670,6 +673,7 @@ for target_year in tqdm(years, desc="年度別学習"):
     test['Model_A'] = (r_p * 0.4) + (c_p * 0.3) + (reg_p * 0.3)
     test['Model_B'] = (r_p * 0.2) + (c_p * 0.6) + (reg_p * 0.2)
     test['Model_C'] = (c_p * 0.5) + (reg_p * 0.5)
+    test['Model_D'] = (c_p)
     
     # 評価をループ内で実行し、進捗を確認する
     evaluate_and_print_results(test, target_year)
