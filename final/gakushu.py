@@ -188,7 +188,7 @@ def add_features(t_df):
     t_df['牡馬斤量_rel'] = t_df['斤量_rel'].astype(str)+ '_' + t_df['牡馬年齢'].astype(str)
 
     #過去3レース分のレースランク、距離、芝ダート、着順、脚質が欲しい。→作った。
-    #あと、前走からの日数があるといいかも？
+    #あと、前走からの日数があるといいかも？ →作った。
     #
 
 
@@ -212,7 +212,7 @@ def calculate_complex_weight(row):
     # ① 場所の重み（絶対条件）
     place = str(row['場所'])
     if '函館' in place:
-        weight *= 3.0  # 函館のレースは重視
+        weight *= 5.0  # 函館のレースは重視
     elif '札幌' in place:
         weight *= 1.5  # 札幌のレースは中程度に重視
         
@@ -226,7 +226,7 @@ def calculate_complex_weight(row):
     if rank == 1:
         weight *= 0.7  # 新馬・未勝利はノイズが多いので30%オフ
     elif rank >= 5:
-        weight *= 1.2  # OP・重賞は実力通りなので20%マシ
+        weight *= 1.3  # OP・重賞は実力通りなので20%マシ
     
 
     field = str(row['場所'])
@@ -359,7 +359,8 @@ drop_cols = [# 学習に使わない列のリスト
     '馬体重', '体重増減', '脚質スコア', '上がり偏差値','天気','場所','斤量_ルール','騎手',
     'course_id','馬場状態','回り','枠番','年齢', '馬番', 'is_ハンデ戦','性別',
     'is_牝馬限定', 'is_新馬戦','所属','脚質1_頭数','脚質2_頭数','脚質3_頭数',
-    '脚質4_頭数','芝ダート','is_hakodate','距離','is_senba','is_female','is_male'
+    '脚質4_頭数','芝ダート','is_hakodate','距離','is_senba','is_female','is_male',
+    '前走との間隔_週数', '3走前_芝ダート', '2走前_芝ダート', '牡馬斤量_rel', '牝馬斤量_rel'
     ]
 feats = [c for c in df.columns if c not in drop_cols]
 print(feats)
