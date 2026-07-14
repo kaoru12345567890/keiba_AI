@@ -442,7 +442,7 @@ years = [y for y in sorted(df['年'].unique()) if y >= 2016]
 df['Stacking_Score'] = 0.0
 
 # 精度向上のためのLightGBMコアパラメータ設定
-lgb_params = {
+lgb_params = { # コメントアウトしているのは、より保守的なパラメータ設定
     'learning_rate': 0.03,
     'num_leaves': 31,
     'min_child_samples': 20,
@@ -452,7 +452,120 @@ lgb_params = {
     'random_state': 42,
     'n_jobs': -1,
     **lgb_params_default  # 警告抑制パラメータの展開
+
+    # === 2026年 函館開催（場所コード:02）評価 ===
+    # --- Model_A ---
+    # 1st_tanshō       25.000000
+    # 1st_fukusho      51.388889
+    # 2nd_tanshō       20.833333
+    # 2nd_fukusho      47.222222
+    # 3rd_tanshō       26.388889
+    # 3rd_fukusho      66.666667
+    # 3renpuku         11.111111
+    # 3rentan           1.388889
+    # 3renpuku_box4    23.611111
+    # 3renpuku_box5    34.722222
+    # dtype: float64
+    # --- Model_B ---
+    # 1st_tanshō       25.000000
+    # 1st_fukusho      50.000000
+    # 2nd_tanshō       20.833333
+    # 2nd_fukusho      50.000000
+    # 3rd_tanshō       25.000000
+    # 3rd_fukusho      63.888889
+    # 3renpuku         13.888889
+    # 3rentan           2.777778
+    # 3renpuku_box4    23.611111
+    # 3renpuku_box5    30.555556
+    # dtype: float64
+    # --- Model_C ---
+    # 1st_tanshō       25.000000
+    # 1st_fukusho      51.388889
+    # 2nd_tanshō       22.222222
+    # 2nd_fukusho      50.000000
+    # 3rd_tanshō       26.388889
+    # 3rd_fukusho      65.277778
+    # 3renpuku         13.888889
+    # 3rentan           2.777778
+    # 3renpuku_box4    23.611111
+    # 3renpuku_box5    30.555556
+    # dtype: float64
+    # --- Model_D ---
+    # 1st_tanshō       25.000000
+    # 1st_fukusho      50.000000
+    # 2nd_tanshō       22.222222
+    # 2nd_fukusho      50.000000
+    # 3rd_tanshō       23.611111
+    # 3rd_fukusho      63.888889
+    # 3renpuku         13.888889
+    # 3rentan           2.777778
+    # 3renpuku_box4    22.222222
+    # 3renpuku_box5    29.166667
+    # dtype: float64
 }
+
+# lgb_params = { # より攻めたパラメータ設定
+#     'learning_rate': 0.01,         # じっくり学習（その分、n_estimatorsは1000〜5000等に増やす）
+#     'num_leaves': 63,              # 木を少し深くして表現力を上げる
+#     'min_child_samples': 30,       # 木を深くした分、1葉あたりの最小データ数を増やして過学習予防
+#     'feature_fraction': 0.7,       # 列のサンプリングを少し強めて多様性を持たせる
+#     'bagging_fraction': 0.7,       # 行のサンプリングも少し強める
+#     'bagging_freq': 1,             # 毎イテレーションごとにサンプリングを行う
+#     'random_state': 42,
+#     'n_jobs': -1,
+#     **lgb_params_default
+
+#     #=== 2026年 函館開催（場所コード:02）評価 ===
+#     # --- Model_A ---
+#     # 1st_tanshō       23.611111
+#     # 1st_fukusho      52.777778
+#     # 2nd_tanshō       27.777778
+#     # 2nd_fukusho      50.000000
+#     # 3rd_tanshō       16.666667
+#     # 3rd_fukusho      54.166667
+#     # 3renpuku         13.888889
+#     # 3rentan           1.388889
+#     # 3renpuku_box4    20.833333
+#     # 3renpuku_box5    36.111111
+#     # dtype: float64
+#     # --- Model_B ---
+#     # 1st_tanshō       23.611111
+#     # 1st_fukusho      50.000000
+#     # 2nd_tanshō       25.000000
+#     # 2nd_fukusho      51.388889
+#     # 3rd_tanshō       18.055556
+#     # 3rd_fukusho      55.555556
+#     # 3renpuku         13.888889
+#     # 3rentan           1.388889
+#     # 3renpuku_box4    22.222222
+#     # 3renpuku_box5    29.166667
+#     # dtype: float64
+#     # --- Model_C ---
+#     # 1st_tanshō       22.222222
+#     # 1st_fukusho      50.000000
+#     # 2nd_tanshō       23.611111
+#     # 2nd_fukusho      50.000000
+#     # 3rd_tanshō       19.444444
+#     # 3rd_fukusho      58.333333
+#     # 3renpuku         15.277778
+#     # 3rentan           1.388889
+#     # 3renpuku_box4    22.222222
+#     # 3renpuku_box5    29.166667
+#     # dtype: float64
+#     # --- Model_D ---
+#     # 1st_tanshō       20.833333
+#     # 1st_fukusho      50.000000
+#     # 2nd_tanshō       26.388889
+#     # 2nd_fukusho      54.166667
+#     # 3rd_tanshō       22.222222
+#     # 3rd_fukusho      55.555556
+#     # 3renpuku         13.888889
+#     # 3rentan           1.388889
+#     # 3renpuku_box4    22.222222
+#     # 3renpuku_box5    29.166667
+#     # dtype: float64
+# }
+
 
 # ------------------------------------------
 # 【仕込みフェーズ】2010〜2015年の6年分で最初のメタモデルの土台を作る
