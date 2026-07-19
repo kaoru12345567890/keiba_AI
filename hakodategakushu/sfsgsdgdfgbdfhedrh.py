@@ -27,6 +27,7 @@
 # レースID,レース名,馬名,
 # ==========================================
 
+import os
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import GroupKFold
@@ -37,6 +38,12 @@ from tqdm import tqdm
 import re
 import joblib
 from sklearn.model_selection import KFold
+
+# 新しい保存先フォルダの設定と自動作成
+output_dir = r'C:\keiba_AI\final\output_models'
+if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
+print(f"モデルおよび辞書の保存先フォルダを確認・作成しました: {output_dir}")
 
 # 1. 初期ファイル読み込み
 print("データ読み込み中...")
@@ -246,8 +253,8 @@ for col in categorical_cols:
         le = LabelEncoder()
         df[col] = le.fit_transform(df[col].astype(str))
         encoders[col] = le
-joblib.dump(encoders, 'label_encoders.pkl')
-print("エンコーダーを保存しました。")
+joblib.dump(encoders, os.path.join(output_dir, 'label_encoders.pkl'))
+print("エンコーダーを新フォルダに保存しました。")
 
 # ==========================================
 # 評価関数の定義（詳細版）
@@ -300,8 +307,8 @@ stats_dict = {
     'trainer_place_turf_dirt_rate': df.groupby(['調教師名', '場所', '芝ダート'])['着順'].apply(lambda x: calculate_smooth_rate((x <= 3).astype(int))).to_dict(),
     'baseline': overall_3rd_rate
 }
-joblib.dump(stats_dict, 'stats_dict.pkl')
-print("統計辞書を保存しました。")
+joblib.dump(stats_dict, os.path.join(output_dir, 'stats_dict.pkl'))
+print("統計辞書を新フォルダに保存しました。")
 
 # ==========================================
 # 4. 新規：リークを防ぐ過去データベースの騎手補正関数
@@ -345,7 +352,7 @@ def apply_final_correction_v2(local_df, jockey_efficiency_dict):
 # ==========================================
 def analyze_universal_conditions(local_df, target_year):
     try:
-        encoders = joblib.load('label_encoders.pkl')
+        encoders = joblib.load(os.path.join(output_dir, 'label_encoders.pkl'))
         readable_df = local_df.copy()
         for col, le in encoders.items():
             if col in readable_df.columns:
@@ -475,7 +482,7 @@ meta_train_features = []
 meta_train_target = []
 
 meta_model = lgb.LGBMClassifier(n_estimators=200, learning_rate=0.05)
-meta_pkl_path = 'meta_model.pkl'
+meta_pkl_path = os.path.join(output_dir, 'meta_model.pkl')
 
 if 'Stacking_Score' not in df.columns:
     df['Stacking_Score'] = 0.0
@@ -507,7 +514,7 @@ for target_year in tqdm(years, desc="年度別学習"):
     else:
         jockey_eff_dict = {} # 初期データなしの場合は空辞書
         
-    joblib.dump(jockey_eff_dict, 'jockey_efficiency.pkl')
+    joblib.dump(jockey_eff_dict, os.path.join(output_dir, 'jockey_efficiency.pkl'))
 
     # 統計量の計算
     stats_frame_course = train.groupby('course_frame_key')['着順'].apply(lambda x: (x <= 3).mean())
@@ -589,7 +596,7 @@ for target_year in tqdm(years, desc="年度別学習"):
     # 【新規】保存した前年までの騎手効率PKLを呼び出してテストデータをリークなしで補正
     # ==========================================
     try:
-        loaded_jockey_eff = joblib.load('jockey_efficiency.pkl')
+        loaded_jockey_eff = joblib.load(os.path.join(output_dir, 'jockey_efficiency.pkl'))
     except FileNotFoundError:
         loaded_jockey_eff = {}
         
@@ -687,14 +694,14 @@ if len(final_valid_jockeys) > 0:
 else:
     final_jockey_eff_dict = {}
 
-joblib.dump(final_jockey_eff_dict, 'jockey_efficiency_final.pkl')
+joblib.dump(final_jockey_eff_dict, os.path.join(output_dir, 'jockey_efficiency_final.pkl'))
 
 # 2. 最終モデルを保存
-joblib.dump(final_m_rank, 'model_rank.pkl')
-joblib.dump(final_m_class, 'model_class.pkl')
-joblib.dump(final_m_reg, 'model_reg.pkl')
-joblib.dump(final_feats, 'feature_names.pkl') 
-joblib.dump(meta_model, 'meta_model.pkl')
+joblib.dump(final_m_rank, os.path.join(output_dir, 'model_rank.pkl'))
+joblib.dump(final_m_class, os.path.join(output_dir, 'model_class.pkl'))
+joblib.dump(final_m_reg, os.path.join(output_dir, 'model_reg.pkl'))
+joblib.dump(final_feats, os.path.join(output_dir, 'feature_names.pkl')) 
+joblib.dump(meta_model, os.path.join(output_dir, 'meta_model.pkl'))
 
 print("推論用の正規化スケーラーを保存中...")
 r_p_all = final_m_rank.predict(df[final_feats]).reshape(-1, 1)
@@ -705,9 +712,9 @@ scaler_rank = MinMaxScaler().fit(r_p_all)
 scaler_class = MinMaxScaler().fit(c_p_all)
 scaler_reg = MinMaxScaler().fit(reg_p_all)
 
-joblib.dump(scaler_rank, 'scaler_rank.pkl')
-joblib.dump(scaler_class, 'scaler_class.pkl')
-joblib.dump(scaler_reg, 'scaler_reg.pkl')
+joblib.dump(scaler_rank, os.path.join(output_dir, 'scaler_rank.pkl'))
+joblib.dump(scaler_class, os.path.join(output_dir, 'scaler_class.pkl'))
+joblib.dump(scaler_reg, os.path.join(output_dir, 'scaler_reg.pkl'))
 print("スケーラーの保存が完了しました。")
 
 # 3. 前処理用定数の保存
@@ -715,7 +722,7 @@ preprocessing_consts = {
     'mean_weight': df['馬体重'].mean(),
     'mean_past_rank': 7.5
 }
-joblib.dump(preprocessing_consts, 'preprocessing_consts.pkl')
+joblib.dump(preprocessing_consts, os.path.join(output_dir, 'preprocessing_consts.pkl'))
 
 print("すべてのモデル、定数、騎手効率辞書の保存が完了しました！")
 print("全期間学習モデルと特徴量リストを保存しました！")

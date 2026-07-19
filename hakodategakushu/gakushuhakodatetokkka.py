@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import re
 import joblib
+import os  # パス操作とディレクトリ作成のために追加
 from tqdm import tqdm
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.model_selection import train_test_split
@@ -23,6 +24,12 @@ lgb_logger.addHandler(logging.NullHandler())
 lgb_logger.propagate = False
 
 lgb_params_default = {'verbose': -1, 'importance_type': 'split'}
+
+# ==========================================
+# 【新規設定】pklファイルの保存先ディレクトリ
+# ==========================================
+MODEL_DIR = r'C:\keiba_AI\final\models'
+os.makedirs(MODEL_DIR, exist_ok=True)
 
 # ==========================================
 # 0. データ読み込み（中央10競馬場すべてを使用）
@@ -223,7 +230,8 @@ for col in categorical_cols:
         le = LabelEncoder()
         df[col] = le.fit_transform(df[col].astype(str))
         encoders[col] = le
-joblib.dump(encoders, 'label_encoders.pkl')
+# 出力先を変更
+joblib.dump(encoders, os.path.join(MODEL_DIR, 'label_encoders.pkl'))
 
 # ==========================================
 # 4. 評価関数の定義
@@ -275,7 +283,8 @@ stats_dict = {
     'trainer_place_turf_dirt_rate': df.groupby(['調教師名', '場所', '芝ダート'])['着順'].apply(lambda x: calculate_smooth_rate((x <= 3).astype(int))).to_dict(),
     'baseline': overall_3rd_rate
 }
-joblib.dump(stats_dict, 'stats_dict.pkl')
+# 出力先を変更
+joblib.dump(stats_dict, os.path.join(MODEL_DIR, 'stats_dict.pkl'))
 
 # ==========================================
 # 6. 騎手補正・デバフ用ロジック
@@ -318,7 +327,8 @@ def evaluate_and_print_results(test_df, target_year):
     test_df = test_df.copy()
     
     try:
-        encoders = joblib.load('label_encoders.pkl')
+        # ロード元を新しいディレクトリパスに変更
+        encoders = joblib.load(os.path.join(MODEL_DIR, 'label_encoders.pkl'))
         place_strings = encoders['場所'].inverse_transform(test_df['場所'])
     except:
         place_strings = np.where(test_df['is_hakodate'] == 1, '函館', '他')
@@ -446,7 +456,8 @@ for target_year in tqdm(years, desc="本番ローリング実行中"):
         })
         jockey_stats['efficiency'] = jockey_stats['着順'] / jockey_stats['単勝'].replace(0, 1)
         jockey_eff_dict = jockey_stats['efficiency'].to_dict()
-    joblib.dump(jockey_eff_dict, 'jockey_efficiency_backtest.pkl')
+    # 出力先を変更
+    joblib.dump(jockey_eff_dict, os.path.join(MODEL_DIR, 'jockey_efficiency_backtest.pkl'))
 
     stats_frame_course = train.groupby('course_frame_key')['着順'].apply(lambda x: (x <= 3).mean())
     stats_course_style = train.groupby('course_style_key')['着順'].apply(lambda x: (x <= 3).mean())
@@ -534,7 +545,8 @@ for target_year in tqdm(years, desc="本番ローリング実行中"):
     test['Model_D'] = (c_p_final)
     test['Meta_Model'] = test['Stacking_Score']
     
-    loaded_jockey_eff = joblib.load('jockey_efficiency_backtest.pkl')
+    # ロード元を新しいディレクトリパスに変更
+    loaded_jockey_eff = joblib.load(os.path.join(MODEL_DIR, 'jockey_efficiency_backtest.pkl'))
     
     for m in ['Model_A', 'Model_B', 'Model_C', 'Model_D', 'Meta_Model']:
         test = apply_jockey_boost_v2(test, loaded_jockey_eff, target_col=m)
@@ -560,5 +572,69 @@ y_meta = pd.concat(meta_target_pool, ignore_index=True)
 
 meta_model = lgb.LGBMClassifier(n_estimators=300, learning_rate=0.03, num_leaves=15, min_child_samples=30, random_state=42, objective='binary', **lgb_params_default)
 meta_model.fit(X_meta, y_meta)
-joblib.dump(meta_model, 'meta_model.pkl')
+# 出力先を変更
+joblib.dump(meta_model, os.path.join(MODEL_DIR, 'meta_model.pkl'))
 print("すべての処理、および『全10場対応・洋芝超偏重メタモデル』の保存が完了いたしましたわ。")
+
+# ==================================================
+#  🎯 【2026年】 函館・札幌（洋芝開催）のみのテスト結果 (全 72 レース)
+# ==================================================
+# --- Model_A ---
+# 1st_tanshō       23.611111
+# 1st_fukusho      52.777778
+# 2nd_tanshō       25.000000
+# 2nd_fukusho      52.777778
+# 3rd_tanshō       22.222222
+# 3rd_fukusho      48.611111
+# 3renpuku         12.500000
+# 3rentan           5.555556
+# 3renpuku_box4    23.611111
+# 3renpuku_box5    36.111111
+# dtype: float64
+# --- Model_B ---
+# 1st_tanshō       27.777778
+# 1st_fukusho      54.166667
+# 2nd_tanshō       20.833333
+# 2nd_fukusho      50.000000
+# 3rd_tanshō       22.222222
+# 3rd_fukusho      50.000000
+# 3renpuku          9.722222
+# 3rentan           5.555556
+# 3renpuku_box4    20.833333
+# 3renpuku_box5    34.722222
+# dtype: float64
+# --- Model_C ---
+# 1st_tanshō       26.388889
+# 1st_fukusho      54.166667
+# 2nd_tanshō       20.833333
+# 2nd_fukusho      48.611111
+# 3rd_tanshō       23.611111
+# 3rd_fukusho      51.388889
+# 3renpuku          9.722222
+# 3rentan           5.555556
+# 3renpuku_box4    22.222222
+# 3renpuku_box5    34.722222
+# dtype: float64
+# --- Model_D ---
+# 1st_tanshō       26.388889
+# 1st_fukusho      52.777778
+# 2nd_tanshō       19.444444
+# 2nd_fukusho      47.222222
+# 3rd_tanshō       26.388889
+# 3rd_fukusho      55.555556
+# 3renpuku          9.722222
+# 3rentan           5.555556
+# 3renpuku_box4    22.222222
+# 3renpuku_box5    31.944444
+# dtype: float64
+# --- Meta_Model ---
+# 1st_tanshō       27.777778
+# 1st_fukusho      52.777778
+# 2nd_tanshō       11.111111
+# 2nd_fukusho      44.444444
+# 3rd_tanshō       30.555556
+# 3rd_fukusho      59.722222
+# 3renpuku         15.277778
+# 3rentan           8.333333
+# 3renpuku_box4    22.222222
+# 3renpuku_box5    33.333333

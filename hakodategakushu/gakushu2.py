@@ -2,20 +2,20 @@ import pandas as pd
 import numpy as np
 import re
 import joblib
+import os
 from tqdm import tqdm
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
-from sklearn.model_selection import train_test_split
 import lightgbm as lgb
 
 # ==========================================
-# 既存コードを変更せずに追加した警告・ログ非表示設定
+# 警告・ログ非表示設定
 # ==========================================
 import warnings
 import logging
 warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=pd.errors.PerformanceWarning) # 念のためパフォーマンス警告も抑制
 
-# LightGBMのC++側の出力を抑制し、Python側のロガーを無効化（既存処理への影響なし）
 lgb_logger = logging.getLogger('lightgbm')
 lgb_logger.setLevel(logging.ERROR)
 for handler in lgb_logger.handlers[:]:
@@ -23,15 +23,21 @@ for handler in lgb_logger.handlers[:]:
 lgb_logger.addHandler(logging.NullHandler())
 lgb_logger.propagate = False
 
-# パラメータのデフォルトにログ出力を抑制する設定を注入
 lgb_params_default = {'verbose': -1, 'importance_type': 'split'}
-# ==========================================
+
+MODEL_DIR = r'C:\keiba_AI\final\models'
+os.makedirs(MODEL_DIR, exist_ok=True)
 
 # ==========================================
-# 0. 設定と前処理補助関数
+# 0. データ読み込み
 # ==========================================
 print("データ読み込み中...")
-df = pd.read_csv(r'C:\keiba_AI\final\processed_12_data.csv', low_memory=False)
+df_raw = pd.read_csv(r'C:\keiba_AI\final\processed_12_data.csv', low_memory=False)
+
+print("【条件適用】中央10競馬場すべてのデータを使用します...")
+jra_places = '札幌|函館|福島|新潟|東京|中山|中京|京都|阪神|小倉'
+df = df_raw[df_raw['場所'].astype(str).str.contains(jra_places, na=False)].copy().reset_index(drop=True)
+print(f"全 raw データ: {len(df_raw)}件 -> 中央10競馬場データ: {len(df)}件")
 
 print("数値化処理中...")
 numeric_cols = [
@@ -52,7 +58,9 @@ def clean_weight_diff(x):
 
 print("馬体重の処理中...")
 df['体重増減'] = df['体重増減'].apply(clean_weight_diff).fillna(0.0)
-df['馬体重'] = df['馬体重'].fillna(df['馬体重'].mean())
+
+# 【リーク対策】全体平均ではなく固定値で安全に補完
+df['馬体重'] = df['馬体重'].fillna(470.0) 
 df['過去平均着順'] = df['過去平均着順'].fillna(7.5)
 
 # ==========================================
@@ -84,7 +92,6 @@ def apply_race_conditions(t_df):
 df = apply_race_conditions(df)
 
 def add_features(t_df):
-    # 基本コンボキー
     t_df['course_id'] = t_df['場所'].astype(str) + '_' + t_df['回り'].astype(str)
     t_df['frame_ratio'] = t_df['馬番'] / t_df['出走数'].replace(0, 1)
     t_df['course_frame_key'] = t_df['course_id'] + '_' + t_df['馬番'].astype(str)
@@ -93,7 +100,6 @@ def add_features(t_df):
         t_df['距離'].astype(str) + '_' + t_df['脚質ラベル'].astype(str)
     )
     
-    # 体重・斤量・能力計算
     t_df['full_weight'] = t_df['馬体重'] + t_df['斤量']
     t_df['weight_ratio'] = t_df['馬体重'] / t_df['斤量'].replace(0, 1)
     t_df['weight_diff'] = t_df['馬体重'] - t_df['斤量'] * 8
@@ -105,13 +111,11 @@ def add_features(t_df):
         t_df['日'].astype(int).astype(str) + t_df['場所'].astype(str) + t_df['レース目'].astype(int).astype(str)
     )
     
-    # レース内相対変数の作成
     cols_to_rel = ['weight_ratio', '斤量', '過去平均着順', 'popularity_vs_ability', '年齢', 'full_weight']
     for col in cols_to_rel:
         if col in t_df.columns:
             t_df[f'{col}_rel'] = t_df[col] - t_df.groupby('レースキー')[col].transform('mean')
 
-    # 脚質分布の計算
     for i in [1, 2, 3, 4]:
         col_name_i = f'is_temp_脚質{i}'
         t_df[col_name_i] = (t_df['脚質ラベル'] == i).astype(int)
@@ -124,7 +128,6 @@ def add_features(t_df):
         mask = (t_df['脚質ラベル'] == i)
         t_df.loc[mask, '同型ライバル頭数'] = t_df.loc[mask, f'脚質{i}_頭数'] - 1
     
-    # 複合クロス特徴量群
     t_df['騎手_競馬場_芝ダート'] = t_df['騎手'].astype(str) + '_' + t_df['場所'] + '_' + t_df['芝ダート']
     t_df['jockey_脚質'] = t_df['騎手'].astype(str) + '_' + t_df['脚質ラベル'].astype(str)
     t_df['場所_脚質'] = t_df['場所'].astype(str) + '_' + t_df['脚質ラベル'].astype(str) + '_' + t_df['芝ダート']
@@ -146,7 +149,6 @@ def add_features(t_df):
     t_df['距離_脚質'] = t_df['距離'].astype(str) + '_' + t_df['脚質ラベル'].astype(str)
     t_df['距離_脚質_馬場状態'] = t_df['距離_脚質'].astype(str) + '_' + t_df['馬場状態'].astype(str)
     
-    # 性別フラグとクロスエンコーディング
     t_df['is_senba'] = (t_df['性別'] == 1).astype(int)
     t_df['is_female'] = (t_df['性別'] == 2).astype(int)
     t_df['is_male'] = (t_df['性別'] == 3).astype(int)
@@ -166,48 +168,44 @@ def add_features(t_df):
     return t_df
 
 df = add_features(df)
-print(df.head())
+
+# 【パフォーマンス対策】大量の列追加によるデータ分断（Fragmented DataFrame）を解消してコピー
+df = df.copy()
 
 # ==========================================
-# 2. 重み付けルール定義
+# 2. 超・函館札幌特化型の重み付けルール
 # ==========================================
-print("函館特化の重み付け処理中...")
+print("重み付け処理中...")
 max_year = df['年'].max()
 
-def calculate_complex_weight(row):
+def calculate_complex_weight_v3(row):
     weight = 1.0
     place = str(row['場所'])
     
-    if '函館' in place:
-        weight *= 5.0
-    elif '札幌' in place:
-        weight *= 1.5
+    if '函館' in place: weight *= 10.0
+    elif '札幌' in place: weight *= 8.5
+    else: weight *= 1.0
         
-    if row['年'] >= (max_year - 2):
-        weight *= 2.0
+    if row['年'] >= (max_year - 2): weight *= 2.0
         
-    # BOX4最適化：新馬・未勝利の学習優先度を下げ、実力戦の優先度を上げる
     rank = row['クラス_ランク']
-    if rank == 1:
-        weight *= 0.4  # 0.7 から引き下げ
-    elif rank >= 5:
-        weight *= 1.6  # 1.3 から引き上げ
+    if rank == 1: weight *= 0.7
+    elif rank >= 5: weight *= 1.3
     
     if '稍' in place: weight *= 1.2
     elif '重' in place: weight *= 1.4
     elif '不' in place: weight *= 1.6
 
-    if row.get('Stacking_Score', 0) > 0.8:
-        weight *= 1.5
-
+    if row.get('Stacking_Score', 0) > 0.8: weight *= 1.5
     return weight
 
-df['weight'] = df.apply(calculate_complex_weight, axis=1)
+df['weight'] = df.apply(calculate_complex_weight_v3, axis=1)
 
 # ==========================================
 # 3. カテゴリ変数のエンコーディング
 # ==========================================
 print("カテゴリ変数のエンコーディング中...")
+# 【★修正の核心】エラーの原因となった過去走の文字列変数（1走前_芝ダート等）や着順履歴を完全網羅
 categorical_cols = [
     '場所', '回り', "芝ダート", '天気', '馬場状態', '騎手', '所属', 
     '調教師名', 'course_id', 'course_frame_key', 'course_style_key', 'jockey_trainer',
@@ -225,8 +223,7 @@ for col in categorical_cols:
         le = LabelEncoder()
         df[col] = le.fit_transform(df[col].astype(str))
         encoders[col] = le
-joblib.dump(encoders, 'label_encoders.pkl')
-print("エンコーダーを保存しました。")
+joblib.dump(encoders, os.path.join(MODEL_DIR, 'label_encoders.pkl'))
 
 # ==========================================
 # 4. 評価関数の定義
@@ -264,193 +261,100 @@ def evaluate_detailed(df_test, score_col):
     return df_test.groupby('レースキー', group_keys=False).apply(get_metrics, include_groups=False).mean() * 100
 
 # ==========================================
-# 5. ターゲットエンコーディング用辞書の生成
+# 5. ターゲットエンコーディング共通関数
 # ==========================================
-overall_3rd_rate = (df['着順'] <= 3).mean()
-
-def calculate_smooth_rate(group):
-    return (group.sum() + 10 * overall_3rd_rate) / (len(group) + 10)
-
-print("統計辞書の作成中...")
-stats_dict = {
-    'course_frame_rate': df.groupby('course_frame_key')['着順'].apply(lambda x: calculate_smooth_rate((x <= 3).astype(int))).to_dict(),
-    'course_style_rate': df.groupby('course_style_key')['着順'].apply(lambda x: calculate_smooth_rate((x <= 3).astype(int))).to_dict(),
-    'jockey_place_turf_dirt_rate': df.groupby('騎手_競馬場_芝ダート')['着順'].apply(lambda x: calculate_smooth_rate((x <= 3).astype(int))).to_dict(),
-    'trainer_place_turf_dirt_rate': df.groupby(['調教師名', '場所', '芝ダート'])['着順'].apply(lambda x: calculate_smooth_rate((x <= 3).astype(int))).to_dict(),
-    'baseline': overall_3rd_rate
-}
-joblib.dump(stats_dict, 'stats_dict.pkl')
-print("統計辞書を保存しました。")
-
-# ==========================================
-# 6. 騎手補正・デバフ用ロジック（PKL対応版）
-# ==========================================
-def apply_jockey_boost_v2(local_df, jockey_efficiency_dict):
-    if '騎手' not in local_df.columns:
-        return local_df
+def apply_target_encoding(train_df, test_df, target_cols):
+    overall_3rd_rate = (train_df['着順'] <= 3).mean()
+    
+    def calc_smooth(group):
+        return (group.sum() + 10 * overall_3rd_rate) / (len(group) + 10)
         
+    res_train = train_df.copy()
+    res_test = test_df.copy()
+    
+    # course_frame_key
+    mp = train_df.groupby('course_frame_key')['着順'].apply(lambda x: calc_smooth((x <= 3).astype(int))).to_dict()
+    res_train['course_frame_rate'] = res_train['course_frame_key'].map(mp).fillna(overall_3rd_rate)
+    res_test['course_frame_rate'] = res_test['course_frame_key'].map(mp).fillna(overall_3rd_rate)
+    
+    # course_style_key
+    mp = train_df.groupby('course_style_key')['着順'].apply(lambda x: calc_smooth((x <= 3).astype(int))).to_dict()
+    res_train['course_style_rate'] = res_train['course_style_key'].map(mp).fillna(overall_3rd_rate)
+    res_test['course_style_rate'] = res_test['course_style_key'].map(mp).fillna(overall_3rd_rate)
+    
+    # 騎手_競馬場_芝ダート
+    mp = train_df.groupby('騎手_競馬場_芝ダート')['着順'].apply(lambda x: calc_smooth((x <= 3).astype(int))).to_dict()
+    res_train['jockey_place_turf_dirt_rate'] = res_train['騎手_競馬場_芝ダート'].map(mp).fillna(overall_3rd_rate)
+    res_test['jockey_place_turf_dirt_rate'] = res_test['騎手_競馬場_芝ダート'].map(mp).fillna(overall_3rd_rate)
+    
+    # 調教師名_場所_芝ダート
+    train_df = train_df.copy()
+    train_df['trainer_key'] = list(zip(train_df['調教師名'], train_df['場所'], train_df['芝ダート']))
+    mp = train_df.groupby('trainer_key')['着順'].apply(lambda x: calc_smooth((x <= 3).astype(int))).to_dict()
+    
+    res_train['trainer_key'] = list(zip(res_train['調教師名'], res_train['場所'], res_train['芝ダート']))
+    res_train['trainer_place_turf_dirt_rate'] = res_train['trainer_key'].map(mp).fillna(overall_3rd_rate)
+    res_train.drop(columns=['trainer_key'], inplace=True)
+    
+    res_test['trainer_key'] = list(zip(res_test['調教師名'], res_test['場所'], res_test['芝ダート']))
+    res_test['trainer_place_turf_dirt_rate'] = res_test['trainer_key'].map(mp).fillna(overall_3rd_rate)
+    res_test.drop(columns=['trainer_key'], inplace=True)
+    
+    return res_train, res_test
+
+# ==========================================
+# 6. 騎手補正・デバフ用ロジック
+# ==========================================
+def apply_jockey_boost_v2(local_df, jockey_efficiency_dict, target_col='Model_A'):
+    if '騎手' not in local_df.columns: return local_df
     efficiencies = list(jockey_efficiency_dict.values())
     x0 = np.mean(efficiencies) if len(efficiencies) > 0 else 1.0
     k = 0.5 
-    
     def get_sigmoid_boost(eff):
-        sigmoid_val = 1 / (1 + np.exp(-k * (eff - x0)))
-        return 1.0 + (sigmoid_val * 0.2)
-
+        return 1.0 + ((1 / (1 + np.exp(-k * (eff - x0)))) * 0.2)
     boost_map = {jockey: get_sigmoid_boost(eff) for jockey, eff in jockey_efficiency_dict.items()}
-    local_df['Model_A'] = local_df['Model_A'] * local_df['騎手'].map(boost_map).fillna(1.0)
-    
-    # 新規追加：3連単用とBOX4用の補正（既存のModel_Aとの一貫性を維持）
-    for col in ['Model_3rentan', 'Model_Box4']:
-        if col in local_df.columns:
-            local_df[col] = local_df[col] * local_df['騎手'].map(boost_map).fillna(1.0)
-            
+    local_df[target_col] = local_df[target_col] * local_df['騎手'].map(boost_map).fillna(1.0)
     return local_df
 
-def apply_final_correction_v2(local_df, jockey_efficiency_dict):
-    if '騎手' not in local_df.columns:
-        return local_df
-
+def apply_final_correction_v2(local_df, jockey_efficiency_dict, target_col='Model_A'):
+    if '騎手' not in local_df.columns: return local_df
     bad_jockeys = [jockey for jockey, eff in jockey_efficiency_dict.items() if eff < 0.3]
     high_perf_jockeys = [jockey for jockey, eff in jockey_efficiency_dict.items() if eff >= 2.0]
-    
-    if high_perf_jockeys:
-        local_df.loc[local_df['騎手'].isin(high_perf_jockeys), 'Model_A'] *= 1.1
-    
-    if bad_jockeys:
-        print(f"\n[自動デバフ適用] 過去データから低効率と判定された騎手への補正: {bad_jockeys}")
-        local_df.loc[local_df['騎手'].isin(bad_jockeys), 'Model_A'] *= 0.85
-    
-    return local_df
-
-# ★新規追加（既存ロジックを改変せず追加適用するBOX4・3連単用最終補正）
-def apply_final_correction_v3(local_df, jockey_efficiency_dict):
-    if '騎手' not in local_df.columns:
-        return local_df
-
-    bad_jockeys = [jockey for jockey, eff in jockey_efficiency_dict.items() if eff < 0.3]
-    high_perf_jockeys = [jockey for jockey, eff in jockey_efficiency_dict.items() if eff >= 2.0]
-    
-    if high_perf_jockeys:
-        for col in ['Model_3rentan', 'Model_Box4']:
-            if col in local_df.columns:
-                local_df.loc[local_df['騎手'].isin(high_perf_jockeys), col] *= 1.1
-    
-    if bad_jockeys:
-        # 3連単（アタマ）は勝ちきれない騎手を厳しくデバフ
-        if 'Model_3rentan' in local_df.columns:
-            local_df.loc[local_df['騎手'].isin(bad_jockeys), 'Model_3rentan'] *= 0.80
-        # BOX4（複勝圏）は紐抜けを防ぐためにデバフを甘くする
-        if 'Model_Box4' in local_df.columns:
-            local_df.loc[local_df['騎手'].isin(bad_jockeys), 'Model_Box4'] *= 0.95
-            
+    if high_perf_jockeys: local_df.loc[local_df['騎手'].isin(high_perf_jockeys), target_col] *= 1.1
+    if bad_jockeys: local_df.loc[local_df['騎手'].isin(bad_jockeys), target_col] *= 0.85
     return local_df
 
 # ==========================================
-# 7. 分析・レポーティング関数
+# 7. レポート関数
 # ==========================================
-def analyze_universal_conditions(local_df, target_year):
-    try:
-        encoders = joblib.load('label_encoders.pkl')
-        readable_df = local_df.copy()
-        for col, le in encoders.items():
-            if col in readable_df.columns:
-                readable_df[col] = le.inverse_transform(readable_df[col])
-    except FileNotFoundError:
-        print("警告: label_encoders.pkl が見つかりません。数字のまま分析します。")
-        readable_df = local_df.copy()
-
-    if not hasattr(analyze_universal_conditions, "cumulative_missed"):
-        analyze_universal_conditions.cumulative_missed = []
-        analyze_universal_conditions.cumulative_failed = []
-        analyze_universal_conditions.all_history_df = pd.DataFrame()
-
-    median_score = readable_df['Model_A'].median()
-    top3_pred = readable_df.sort_values(by='Model_A', ascending=False).groupby('レースID').head(5)
-    
-    failed = top3_pred[top3_pred['着順'] > 3]
-    missed = readable_df[(readable_df['Model_A'] < median_score) & (readable_df['着順'] <= 3)]
-    
-    analyze_universal_conditions.cumulative_missed.append(missed)
-    analyze_universal_conditions.cumulative_failed.append(failed)
-    analyze_universal_conditions.all_history_df = pd.concat([analyze_universal_conditions.all_history_df, readable_df])
-    
-    all_missed = pd.concat(analyze_universal_conditions.cumulative_missed)
-    all_failed = pd.concat(analyze_universal_conditions.cumulative_failed)
-
-    if '騎手' in readable_df.columns:
-        jockey_stats = readable_df.groupby('騎手').agg({
-            '着順': lambda x: (x <= 3).sum(), 
-            '単勝': lambda x: (1 / x).sum() 
-        })
-        jockey_stats['efficiency'] = jockey_stats['着順'] / jockey_stats['単勝']
-        print(f"\n=== 騎手の真の実力ランキング (期待値に対する効率) ===")
-        print(jockey_stats.sort_values(by='efficiency', ascending=False).head(5))
-    
-    universal_cols = ['騎手', '距離_脚質', '調教師名', 'jockey_trainer', 'frame_ratio']
-    print(f"\n=== 【{target_year}年】 函館開催 統計分析レポート ===")
-    
-    for col in universal_cols:
-        if col in readable_df.columns:
-            top_missed_cum = all_missed[col].value_counts().index[:5].tolist()
-            top_failed_cum = all_failed[col].value_counts().index[:5].tolist()
-            
-            ratio_year = (missed[col].value_counts() / readable_df[col].value_counts()).fillna(0).sort_values(ascending=False)
-            ratio_cum = (all_missed[col].value_counts() / analyze_universal_conditions.all_history_df[col].value_counts()).fillna(0).sort_values(ascending=False)
-            
-            print(f"\n--- {col} の分析 ---")
-            print(f"【累計：穴馬(モデル評価は低かったが3着に入った穴ウマ)】: {top_missed_cum}")
-            print(f"【累計：上位予想したが馬券外のカス】: {top_failed_cum}")
-            print(f"【{target_year}年：的中率の高い穴馬の条件 (出現率TOP5)】:")
-            for name, val in ratio_year.head(5).items():
-                print(f"  {name}: {val:.2%}")
-            print(f"【累計：的中率の高い穴馬の条件 (出現率TOP5)】:")
-            for name, val in ratio_cum.head(5).items():
-                print(f"  {name}: {val:.2%}")
-        else:
-            print(f"\n※ データに '{col}' が存在しません。")
-
 def evaluate_and_print_results(test_df, target_year):
     test_df = test_df.copy()
-    test_df['place_code'] = test_df['レースID'].astype(str).str[4:6]
-    # 既存の評価モデルリストに「Model_3rentan」と「Model_Box4」を追加
-    models = ['Model_A', 'Model_B', 'Model_C', 'Model_D', 'Model_3rentan', 'Model_Box4']
+    try:
+        encoders = joblib.load(os.path.join(MODEL_DIR, 'label_encoders.pkl'))
+        place_strings = encoders['場所'].inverse_transform(test_df['場所'])
+    except:
+        place_strings = np.where(test_df['is_hakodate'] == 1, '函館', '他')
+    test_df['場所_文字列'] = place_strings
     
-    print(f"\n=== {target_year}年 全体評価 ===")
+    models = ['Model_A', 'Model_B', 'Model_C', 'Model_D', 'Meta_Model']
+    print(f"\n==================================================")
+    print(f" 📊 【{target_year}年】 中央10競馬場 総合テスト結果 (全 {test_df['レースキー'].nunique()} レース)")
+    print(f"==================================================")
     for m in models:
-        if m in test_df.columns:
-            print(f"--- {m} ---")
-            print(evaluate_detailed(test_df, m))
+        print(f"--- {m} ---")
+        print(evaluate_detailed(test_df, m))
         
-    target_code = '02'
-    local_df = test_df[test_df['place_code'] == target_code].copy()
-    
-    if not local_df.empty:
-        print(f"\n=== {target_year}年 函館開催（場所コード:{target_code}）評価 ===")
+    yo_shiba_df = test_df[test_df['場所_文字列'].astype(str).str.contains('函館|札幌', na=False)].copy()
+    if not yo_shiba_df.empty:
+        print(f"\n==================================================")
+        print(f" 🎯 【{target_year}年】 函館・札幌（洋芝開催）のみのテスト結果 (全 {yo_shiba_df['レースキー'].nunique()} レース)")
+        print(f"==================================================")
         for m in models:
-            if m in local_df.columns:
-                print(f"--- {m} ---")
-                print(evaluate_detailed(local_df, m))
-        
-        print(f"\n=== 穴馬/不適格馬：予測分析レポート ===")
-        local_df = local_df.sort_values(by=['レースID', 'Model_A'], ascending=[True, False])
-        
-        top3_pred = local_df.groupby('レースID').head(3).copy()
-        top3_pred['is_correct'] = (top3_pred['着順'] <= 3).astype(int)
-        
-        failed_list = top3_pred[top3_pred['is_correct'] == 0]
-        missed_list = local_df[(local_df['Model_A'] < local_df['Model_A'].median()) & (local_df['着順'] <= 3)]
-        
-        print(f"\n【上位予想したが3着以内外】\n{failed_list[['レースID', '馬名', 'Model_A', '着順']].head(5)}")
-        print(f"\n【見落とした穴馬（スコア低めだが3着以内）】\n{missed_list[['レースID', '馬名', 'Model_A', '着順']].head(5)}")
-        
-        analyze_universal_conditions(local_df, target_year)
-        print(local_df)
-    else:
-        print(f"\n函館開催のデータは見つかりませんでした。")
+            print(f"--- {m} ---")
+            print(evaluate_detailed(yo_shiba_df, m))
 
 # ==========================================
-# 8. バックテスト＆モデリングの実行（時系列ローリング・スタッキング完全対応）
+# 8. バックテスト＆モデリングの実行
 # ==========================================
 print("モデルの学習開始...")
 
@@ -467,98 +371,75 @@ drop_cols = [
 ]
 feat_base = [c for c in df.columns if c not in drop_cols]
 
-all_results = []
-# バックテスト（本番）は 2016 年からスタート
 years = [y for y in sorted(df['年'].unique()) if y >= 2016]
 
-# すべてのデータで一括初期化
+# 【警告対策】代入する前に一旦 df を完全に新調してフラグメンテーションを防ぐ
+df = df.copy()
 df['Stacking_Score'] = 0.0
 
-# 精度向上のためのLightGBMコアパラメータ設定
-# BOX4評価最適化のため、「バランスの良いパラメータ設定」を基本として採択
 lgb_params = {
-    'learning_rate': 0.02,         # 0.03より少しだけじっくり、0.01よりは軽快に
-    'num_leaves': 38,              # 31から少しだけ部屋を増やして表現力を強化
-    'min_child_samples': 25,       # 部屋を増やした分、1部屋の最低データ数を25に増やして過学習を防御
-    'feature_fraction': 0.75,      # 0.8と0.7の中間。適度に列を間引いて多様性を出す
-    'bagging_fraction': 0.80,      # 行のサンプリングは保守的設定をキープして安定性を担保
-    'bagging_freq': 3,             # 数回に1回データを入れ替えて適度な揺らぎを与える
-    'random_state': 42,
-    'n_jobs': -1,
-    **lgb_params_default           # 警告抑制パラメータの展開
+    'learning_rate': 0.03, 'num_leaves': 31, 'min_child_samples': 20,
+    'feature_fraction': 0.8, 'bagging_fraction': 0.8, 'bagging_freq': 5,
+    'random_state': 42, 'n_jobs': -1, **lgb_params_default
 }
-
+meta_context_cols = ['単勝', '出走数', '過去平均着順', 'クラス_ランク']
 
 # ------------------------------------------
-# 【仕込みフェーズ】2010〜2015年の6年分で最初のメタモデルの土台を作る
+# 【仕込みフェーズ】時系列に沿ったプール構築
 # ------------------------------------------
 print("\n--- 【仕込み期間】2010〜2015年のベースモデル構築中 ---")
 init_train = df[(df['年'] >= 2010) & (df['年'] <= 2015)].copy()
-
-# 仕込み期間内での簡易Out-of-Fold、または時系列統計量
-stats_frame_course = init_train.groupby('course_frame_key')['着順'].apply(lambda x: (x <= 3).mean())
-stats_course_style = init_train.groupby('course_style_key')['着順'].apply(lambda x: (x <= 3).mean())
-stats_jockey_place_turf_dirt = init_train.groupby('騎手_競馬場_芝ダート')['着順'].apply(lambda x: (x <= 3).mean())
-baseline_rate = (init_train['着順'] <= 3).mean()
-
-# メタモデルを育てるための特徴量蓄積リスト
 meta_features_pool = []
 meta_target_pool = []
 
-# 仕込み期間（2011〜2015）を1年ずつ擬似ローリングして、初期のメタ学習用データを溜める
 for stage_y in range(2011, 2016):
-    stage_tr = init_train[init_train['年'] < stage_y]
-    stage_va = init_train[init_train['年'] == stage_y]
+    stage_tr = init_train[init_train['年'] < stage_y].copy()
+    stage_va = init_train[init_train['年'] == stage_y].copy()
     if stage_tr.empty or stage_va.empty: continue
     
-    # 3モデルの簡易学習
-    features_tmp = feat_base + ['course_frame_rate', 'course_style_rate', 'jockey_place_turf_dirt_rate']
-    
-    # BOX4評価最適化のために Ranker の目標を ndcg@4 に合わせる
-    tmp_rank = lgb.LGBMRanker(
-        n_estimators=150, 
-        objective='lambdarank', 
-        metric='ndcg',
-        eval_at=[4],
-        **lgb_params
-    ).fit(
-        stage_tr[feat_base], 19 - stage_tr['着順'].clip(upper=18), group=stage_tr.groupby('レースキー').size().to_numpy()
+    stage_tr, stage_va = apply_target_encoding(stage_tr, stage_va, [])
+    feats_for_init_stacking = feat_base + ['course_frame_rate', 'course_style_rate', 'jockey_place_turf_dirt_rate', 'trainer_place_turf_dirt_rate']
+
+    tmp_rank = lgb.LGBMRanker(n_estimators=150, objective='lambdarank', **lgb_params).fit(
+        stage_tr[feats_for_init_stacking], 19 - stage_tr['着順'].clip(upper=18), group=stage_tr.groupby('レースキー').size().to_numpy()
     )
-    
     tmp_class = lgb.LGBMClassifier(n_estimators=150, objective='binary', **lgb_params).fit(
-        stage_tr[feat_base], (stage_tr['着順'] <= 3).astype(int)
+        stage_tr[feats_for_init_stacking], (stage_tr['着順'] <= 3).astype(int)
     )
     tmp_reg = lgb.LGBMRegressor(n_estimators=150, objective='regression', **lgb_params).fit(
-        stage_tr[feat_base], stage_tr['着順']
+        stage_tr[feats_for_init_stacking], stage_tr['着順']
     )
     
     scaler_tmp = MinMaxScaler()
-    r_p = scaler_tmp.fit_transform(tmp_rank.predict(stage_va[feat_base]).reshape(-1, 1)).flatten()
-    c_p = tmp_class.predict_proba(stage_va[feat_base])[:, 1]
-    reg_p = scaler_tmp.fit_transform((-tmp_reg.predict(stage_va[feat_base])).reshape(-1, 1)).flatten()
+    r_p = scaler_tmp.fit_transform(tmp_rank.predict(stage_va[feats_for_init_stacking]).reshape(-1, 1)).flatten()
+    c_p = tmp_class.predict_proba(stage_va[feats_for_init_stacking])[:, 1]
+    reg_p = scaler_tmp.fit_transform((-tmp_reg.predict(stage_va[feats_for_init_stacking])).reshape(-1, 1)).flatten()
     
-    meta_features_pool.append(pd.DataFrame({'r_p': r_p, 'c_p': c_p, 'reg_p': reg_p}))
+    batch_meta = pd.DataFrame({'r_p': r_p, 'c_p': c_p, 'reg_p': reg_p})
+    for ccol in meta_context_cols:
+        batch_meta[ccol] = stage_va[ccol].values
+        
+    meta_features_pool.append(batch_meta)
     meta_target_pool.append((stage_va['着順'] <= 3).astype(int))
 
-# 初期メタモデルの学習
-X_meta_init = pd.concat(meta_features_pool, ignore_index=True)
-y_meta_init = pd.concat(meta_target_pool, ignore_index=True)
-meta_model = lgb.LGBMClassifier(n_estimators=300, learning_rate=0.03, num_leaves=15, min_child_samples=30, random_state=42, objective='binary', **lgb_params_default)
-meta_model.fit(X_meta_init, y_meta_init)
-
-
 # ------------------------------------------
-# 【本番バックテスト期間】1年ずつのローリングループ（2016年〜最新年）
+# 【本番バックテスト期間】
 # ------------------------------------------
 print("\n--- 【本番バックテスト】時系列ローリングループ開始 ---")
 for target_year in tqdm(years, desc="本番ローリング実行中"):
-    # 1. 【学習データの確定】ターゲット前年までの全履歴
     train = df[(df['年'] >= 2010) & (df['年'] < target_year)].copy()
     test = df[df['年'] == target_year].copy()
-    
     if train.empty or test.empty: continue
 
-    # 2. 【騎手・コース統計の算出】（未来リークの完全排除）
+    X_meta_current_loop = pd.concat(meta_features_pool, ignore_index=True)
+    y_meta_current_loop = pd.concat(meta_target_pool, ignore_index=True)
+    
+    meta_model = lgb.LGBMClassifier(
+        n_estimators=300, learning_rate=0.03, num_leaves=15, min_child_samples=30, 
+        random_state=42, objective='binary', **lgb_params_default
+    )
+    meta_model.fit(X_meta_current_loop, y_meta_current_loop)
+
     jockey_counts = train['騎手'].value_counts()
     valid_jockeys = jockey_counts[jockey_counts >= 5].index
     jockey_eff_dict = {}
@@ -569,35 +450,35 @@ for target_year in tqdm(years, desc="本番ローリング実行中"):
         })
         jockey_stats['efficiency'] = jockey_stats['着順'] / jockey_stats['単勝'].replace(0, 1)
         jockey_eff_dict = jockey_stats['efficiency'].to_dict()
-    joblib.dump(jockey_eff_dict, 'jockey_efficiency_backtest.pkl')
 
-    stats_frame_course = train.groupby('course_frame_key')['着順'].apply(lambda x: (x <= 3).mean())
-    stats_course_style = train.groupby('course_style_key')['着順'].apply(lambda x: (x <= 3).mean())
-    stats_jockey_place_turf_dirt = train.groupby('騎手_競馬場_芝ダート')['着順'].apply(lambda x: (x <= 3).mean())
-    stats_trainer_place_turf_dirt = train.groupby(['調教師名', '場所', '芝ダート'])['着順'].apply(lambda x: (x <= 3).mean())
-    baseline_rate = (train['着順'] <= 3).mean()
-
-    for t_df in [train, test]:
-        t_df['course_frame_rate'] = t_df['course_frame_key'].map(stats_frame_course).fillna(baseline_rate)
-        t_df['course_style_rate'] = t_df['course_style_key'].map(stats_course_style).fillna(baseline_rate)
-        t_df['jockey_place_turf_dirt_rate'] = t_df['騎手_競馬場_芝ダート'].map(stats_jockey_place_turf_dirt).fillna(baseline_rate)
-        t_df['trainer_key'] = list(zip(t_df['調教師名'], t_df['場所'], t_df['芝ダート']))
-        t_df['trainer_place_turf_dirt_rate'] = t_df['trainer_key'].map(stats_trainer_place_turf_dirt).fillna(baseline_rate)
-
-    # 3. 【最重要：テスト対象年の Stacking_Score を予測・上書き】
+    train, test = apply_target_encoding(train, test, [])
     feats_for_stacking = feat_base + ['course_frame_rate', 'course_style_rate', 'jockey_place_turf_dirt_rate', 'trainer_place_turf_dirt_rate']
     
-    # 既存の Stacking 予測用 Ranker も BOX4 用にパラメータ反映
-    stack_rank = lgb.LGBMRanker(
-        n_estimators=300, 
-        objective='lambdarank', 
-        metric='ndcg',
-        eval_at=[4],
-        **lgb_params
-    ).fit(
-        train[feats_for_stacking], 19 - train['着順'].clip(upper=18), group=train.groupby('レースキー').size().to_numpy()
+    split_idx = int(len(train) * 0.65)
+    sub_tr = train.iloc[:split_idx].copy()
+    sub_va = train.iloc[split_idx:].copy()
+    
+    sub_stack_rank = lgb.LGBMRanker(n_estimators=150, objective='lambdarank', **lgb_params).fit(
+        sub_tr[feats_for_stacking], 19 - sub_tr['着順'].clip(upper=18), group=sub_tr.groupby('レースキー').size().to_numpy()
+    )
+    sub_stack_class = lgb.LGBMClassifier(n_estimators=150, objective='binary', **lgb_params).fit(
+        sub_tr[feats_for_stacking], (sub_tr['着順'] <= 3).astype(int)
+    )
+    sub_stack_reg = lgb.LGBMRegressor(n_estimators=150, objective='regression', **lgb_params).fit(
+        sub_tr[feats_for_stacking], sub_tr['着順']
     )
     
+    scaler_test = MinMaxScaler()
+    sub_va_r = scaler_test.fit_transform(sub_stack_rank.predict(sub_va[feats_for_stacking]).reshape(-1, 1)).flatten()
+    sub_va_c = sub_stack_class.predict_proba(sub_va[feats_for_stacking])[:, 1]
+    sub_va_reg = scaler_test.fit_transform((-sub_stack_reg.predict(sub_va[feats_for_stacking])).reshape(-1, 1)).flatten()
+    
+    sub_va_batch = pd.DataFrame({'r_p': sub_va_r, 'c_p': sub_va_c, 'reg_p': sub_va_reg})
+    for ccol in meta_context_cols: sub_va_batch[ccol] = sub_va[ccol].values
+    
+    stack_rank = lgb.LGBMRanker(n_estimators=300, objective='lambdarank', **lgb_params).fit(
+        train[feats_for_stacking], 19 - train['着順'].clip(upper=18), group=train.groupby('レースキー').size().to_numpy()
+    )
     stack_class = lgb.LGBMClassifier(n_estimators=300, objective='binary', **lgb_params).fit(
         train[feats_for_stacking], (train['着順'] <= 3).astype(int)
     )
@@ -605,25 +486,21 @@ for target_year in tqdm(years, desc="本番ローリング実行中"):
         train[feats_for_stacking], train['着順']
     )
     
-    scaler_test = MinMaxScaler()
     test_r_p = scaler_test.fit_transform(stack_rank.predict(test[feats_for_stacking]).reshape(-1, 1)).flatten()
     test_c_p = stack_class.predict_proba(test[feats_for_stacking])[:, 1]
     test_reg_p = scaler_test.fit_transform((-stack_reg.predict(test[feats_for_stacking])).reshape(-1, 1)).flatten()
     
     test_batch_df = pd.DataFrame({'r_p': test_r_p, 'c_p': test_c_p, 'reg_p': test_reg_p})
+    for ccol in meta_context_cols: test_batch_df[ccol] = test[ccol].values
     
     test['Stacking_Score'] = meta_model.predict_proba(test_batch_df)[:, 1]
     df.loc[test.index, 'Stacking_Score'] = test['Stacking_Score']
 
-    train_r_p = scaler_test.fit_transform(stack_rank.predict(train[feats_for_stacking]).reshape(-1, 1)).flatten()
-    train_c_p = stack_class.predict_proba(train[feats_for_stacking])[:, 1]
-    train_reg_p = scaler_test.fit_transform((-stack_reg.predict(train[feats_for_stacking])).reshape(-1, 1)).flatten()
-    train_batch_df = pd.DataFrame({'r_p': train_r_p, 'c_p': train_c_p, 'reg_p': train_reg_p})
-    train['Stacking_Score'] = meta_model.predict_proba(train_batch_df)[:, 1]
+    train['Stacking_Score'] = 0.0
+    train.iloc[split_idx:, train.columns.get_loc('Stacking_Score')] = meta_model.predict_proba(sub_va_batch)[:, 1]
 
-    # 4. 【本番メインモデル学習】
     current_feats = feats_for_stacking + ['Stacking_Score']
-    train_weights = train.apply(calculate_complex_weight, axis=1).values
+    train_weights = train.apply(calculate_complex_weight_v3, axis=1).values
     
     val_size = int(len(train) * 0.15)
     train_idx, val_idx = train.index[:-val_size], train.index[-val_size:]
@@ -632,14 +509,7 @@ for target_year in tqdm(years, desc="本番ローリング実行中"):
     X_val, y_val = train.loc[val_idx, current_feats], train.loc[val_idx]
     w_tr, w_val = train_weights[:-val_size], train_weights[-val_size:]
 
-    # メインモデルの学習実行 (NDCG@4 / eval_at=[4] 設定)
-    m_rank = lgb.LGBMRanker(
-        n_estimators=1000, 
-        objective='lambdarank', 
-        metric='ndcg',
-        eval_at=[4],
-        **lgb_params
-    )
+    m_rank = lgb.LGBMRanker(n_estimators=1000, objective='lambdarank', **lgb_params)
     m_rank.fit(
         X_tr, 19 - y_tr['着順'].clip(upper=18), group=y_tr.groupby('レースキー').size().to_numpy(), sample_weight=w_tr,
         eval_set=[(X_val, 19 - y_val['着順'].clip(upper=18))], eval_group=[y_val.groupby('レースキー').size().to_numpy()],
@@ -660,151 +530,32 @@ for target_year in tqdm(years, desc="本番ローリング実行中"):
         callbacks=[lgb.early_stopping(stopping_rounds=30, verbose=False)]
     )
 
-    # 5. 【テストデータへの予測とブレンド】
     r_p_final = scaler_test.fit_transform(m_rank.predict(test[current_feats]).reshape(-1, 1)).flatten()
     c_p_final = m_class.predict_proba(test[current_feats])[:, 1]
     reg_p_final = scaler_test.fit_transform((-m_reg.predict(test[current_feats])).reshape(-1, 1)).flatten()
     
-    # 既存ブレンドモデルの設定（変更なし）
     test['Model_A'] = (r_p_final * 0.4) + (c_p_final * 0.3) + (reg_p_final * 0.3)
     test['Model_B'] = (r_p_final * 0.2) + (c_p_final * 0.6) + (reg_p_final * 0.2)
     test['Model_C'] = (c_p_final * 0.5) + (reg_p_final * 0.5)
     test['Model_D'] = (c_p_final)
+    test['Meta_Model'] = test['Stacking_Score']
     
-    # ★新規追加ブレンド（3連単用とBOX4用）
-    test['Model_3rentan'] = (r_p_final * 0.4) + (c_p_final * 0.3) + (reg_p_final * 0.3)
-    test['Model_Box4'] = (r_p_final * 0.2) + (c_p_final * 0.7) + (reg_p_final * 0.1)
-    
-    # 騎手補正（既存ロジック）
-    loaded_jockey_eff = joblib.load('jockey_efficiency_backtest.pkl')
-    test = apply_jockey_boost_v2(test, loaded_jockey_eff)
-    test = apply_final_correction_v2(test, loaded_jockey_eff)
-    
-    # ★新規追加ロジック（追加ブレンド用に対する特別補正）
-    test = apply_final_correction_v3(test, loaded_jockey_eff)
+    for m in ['Model_A', 'Model_B', 'Model_C', 'Model_D', 'Meta_Model']:
+        test = apply_jockey_boost_v2(test, jockey_eff_dict, target_col=m)
+        test = apply_final_correction_v2(test, jockey_eff_dict, target_col=m)
 
-    # 評価結果の表示
     evaluate_and_print_results(test, target_year)
-    all_results.append(test)
-    
-    # 6. 【メタモデルの更新】
     meta_features_pool.append(test_batch_df)
     meta_target_pool.append((test['着順'] <= 3).astype(int))
-    
-    X_meta_updated = pd.concat(meta_features_pool, ignore_index=True)
-    y_meta_updated = pd.concat(meta_target_pool, ignore_index=True)
-    meta_model.fit(X_meta_updated, y_meta_updated)
-
-final = pd.concat(all_results)
 
 # ==========================================
-# 9. メタモデルの最終決定と可視化
+# 9. メタモデルの最終決定と保存
 # ==========================================
-print("メタモデル（スタッキング）の学習を開始...")
+print("メタモデル（スタッキング）の最終学習を開始...")
 X_meta = pd.concat(meta_features_pool, ignore_index=True)
 y_meta = pd.concat(meta_target_pool, ignore_index=True)
 
-meta_model = lgb.LGBMClassifier(
-    n_estimators=300, 
-    learning_rate=0.03,
-    num_leaves=15,
-    min_child_samples=30,
-    random_state=42,
-    objective='binary',
-    **lgb_params_default
-)
+meta_model = lgb.LGBMClassifier(n_estimators=300, learning_rate=0.03, num_leaves=15, min_child_samples=30, random_state=42, objective='binary', **lgb_params_default)
 meta_model.fit(X_meta, y_meta)
-print("メタモデルの学習が完了しました。")
-
-meta_probs = meta_model.predict_proba(X_meta)[:, 1]
-final['Stacking_Score'] = meta_probs
-
-print("\n=== メタモデルの判断基準（重要度） ===")
-meta_importance = pd.DataFrame({'feature': ['r_p', 'c_p', 'reg_p'], 'importance': meta_model.feature_importances_}).sort_values(by='importance', ascending=False)
-print(meta_importance)
-
-print("\n=== メタモデルの予測スコアの分布（期待値など） ===")
-print(pd.Series(meta_probs).describe())
-
-# ==========================================
-# 10. 全データを用いた本番用最終学習 【★学習ロジック最適化箇所】
-# ==========================================
-print("--- 全期間データでの最終モデル学習を開始 ---")
-final_groups = df.groupby('レースキー').size().to_numpy()
-df['trainer_key'] = list(zip(df['調教師名'], df['場所'], df['芝ダート']))
-
-df['course_frame_rate'] = df['course_frame_key'].map(df.groupby('course_frame_key')['着順'].apply(lambda x: (x <= 3).mean())).fillna(0)
-df['course_style_rate'] = df['course_style_key'].map(df.groupby('course_style_key')['着順'].apply(lambda x: (x <= 3).mean())).fillna(0)
-df['jockey_place_turf_dirt_rate'] = df['騎手_競馬場_芝ダート'].map(df.groupby('騎手_競馬場_芝ダート')['着順'].apply(lambda x: (x <= 3).mean())).fillna(0)
-df['trainer_place_turf_dirt_rate'] = df['trainer_key'].map(df.groupby(['調教師名', '場所', '芝ダート'])['着順'].apply(lambda x: (x <= 3).mean())).fillna(0)
-
-print("全データ用スタッキング特徴量の算出中...")
-final_feats_without_stacking = feat_base + ['course_frame_rate', 'course_style_rate', 'jockey_place_turf_dirt_rate', 'trainer_place_turf_dirt_rate']
-
-# 本番用 Ranker も BOX4 最適化設定（NDCG@4）を適用
-tmp_rank = lgb.LGBMRanker(
-    n_estimators=450, 
-    objective='lambdarank', 
-    metric='ndcg',
-    eval_at=[4],
-    **lgb_params
-).fit(df[final_feats_without_stacking], 19 - df['着順'].clip(upper=18), group=final_groups)
-
-tmp_class = lgb.LGBMClassifier(n_estimators=450, objective='binary', **lgb_params).fit(df[final_feats_without_stacking], (df['着順'] <= 3).astype(int))
-tmp_reg = lgb.LGBMRegressor(n_estimators=450, objective='regression', **lgb_params).fit(df[final_feats_without_stacking], df['着順'])
-
-scaler_tmp = MinMaxScaler()
-all_r_p = scaler_tmp.fit_transform(tmp_rank.predict(df[final_feats_without_stacking]).reshape(-1, 1)).flatten()
-all_c_p = tmp_class.predict_proba(df[final_feats_without_stacking])[:, 1]
-all_reg_p = scaler_tmp.fit_transform((-tmp_reg.predict(df[final_feats_without_stacking])).reshape(-1, 1)).flatten()
-
-all_batch_df = pd.DataFrame({'r_p': all_r_p, 'c_p': all_c_p, 'reg_p': all_reg_p})
-df['Stacking_Score'] = meta_model.predict_proba(all_batch_df)[:, 1]
-
-final_feats = feat_base + ['course_frame_rate', 'course_style_rate', 'jockey_place_turf_dirt_rate', 'trainer_place_turf_dirt_rate', 'Stacking_Score']
-print(final_feats)
-print("最終モデルの学習中...")
-
-# 最終保存用モデルのフィッティング (Ranker に BOX4 設定を反映)
-final_m_rank = lgb.LGBMRanker(
-    n_estimators=450, 
-    objective='lambdarank', 
-    metric='ndcg',
-    eval_at=[4],
-    **lgb_params
-).fit(df[final_feats], 19 - df['着順'].clip(upper=18), group=final_groups)
-
-final_m_class = lgb.LGBMClassifier(n_estimators=450, objective='binary', **lgb_params).fit(df[final_feats], (df['着順'] <= 3).astype(int))
-final_m_reg = lgb.LGBMRegressor(n_estimators=450, objective='regression', **lgb_params).fit(df[final_feats], df['着順'])
-
-# ------------------------------------------
-# 本番推論用（全期間データ）の騎手効率辞書をPKL保存
-# ------------------------------------------
-print("本番推論用の最終騎手効率辞書を保存中...")
-final_jockey_counts = df['騎手'].value_counts()
-final_valid_jockeys = final_jockey_counts[final_jockey_counts >= 5].index
-
-if len(final_valid_jockeys) > 0:
-    final_jockey_stats = df[df['騎手'].isin(final_valid_jockeys)].groupby('騎手').agg({
-        '着順': lambda x: (x <= 3).sum(),
-        '単勝': lambda x: (1 / x).replace(np.inf, 0).sum()
-    })
-    final_jockey_eff_dict = (final_jockey_stats['着順'] / final_jockey_stats['単勝'].replace(0, 1)).to_dict()
-else:
-    final_jockey_eff_dict = {}
-
-joblib.dump(final_jockey_eff_dict, 'jockey_efficiency_final.pkl')
-
-# ==========================================
-# 11. 各種オブジェクト・スケーラーの保存
-# ==========================================
-joblib.dump(final_m_rank, 'model_rank.pkl')
-joblib.dump(final_m_class, 'model_class.pkl')
-joblib.dump(final_m_reg, 'model_reg.pkl')
-joblib.dump(final_feats, 'feature_names.pkl') 
-joblib.dump(meta_model, 'meta_model.pkl')
-
-print("推論用の正規化スケーラーを保存中...")
-r_p_all = final_m_rank.predict(df[final_feats]).reshape(-1, 1)
-c_p_all = final_m_class.predict_proba(df[final_feats])[:, 1].reshape(-1, 1)
-reg_p_all = (-final_m_reg.predict(df[final_feats])).reshape(-1, 1)
+joblib.dump(meta_model, os.path.join(MODEL_DIR, 'meta_model.pkl'))
+print("すべての処理、および『全10場対応・洋芝超偏重メタモデル』の保存が完了いたしましたわ。")

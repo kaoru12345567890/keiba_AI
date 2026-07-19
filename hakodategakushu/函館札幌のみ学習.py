@@ -6,6 +6,7 @@ from tqdm import tqdm
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.model_selection import train_test_split
 import lightgbm as lgb
+import os  # パス操作とフォルダ作成のために追加
 
 # ==========================================
 # 既存コードを変更せずに追加した警告・ログ非表示設定
@@ -26,6 +27,12 @@ lgb_logger.propagate = False
 # パラメータのデフォルトにログ出力を抑制する設定を注入
 lgb_params_default = {'verbose': -1, 'importance_type': 'split'}
 # ==========================================
+
+# ==========================================
+# pklファイル保存先フォルダの設定
+# ==========================================
+PKL_DIR = 'pkl_output'
+os.makedirs(PKL_DIR, exist_ok=True)  # フォルダが存在しない場合は自動作成します
 
 # ==========================================
 # 0. 設定と前処理補助関数
@@ -224,7 +231,7 @@ for col in categorical_cols:
         le = LabelEncoder()
         df[col] = le.fit_transform(df[col].astype(str))
         encoders[col] = le
-joblib.dump(encoders, 'label_encoders.pkl')
+joblib.dump(encoders, os.path.join(PKL_DIR, 'label_encoders.pkl'))
 print("エンコーダーを保存しました。")
 
 # ==========================================
@@ -278,7 +285,7 @@ stats_dict = {
     'trainer_place_turf_dirt_rate': df.groupby(['調教師名', '場所', '芝ダート'])['着順'].apply(lambda x: calculate_smooth_rate((x <= 3).astype(int))).to_dict(),
     'baseline': overall_3rd_rate
 }
-joblib.dump(stats_dict, 'stats_dict.pkl')
+joblib.dump(stats_dict, os.path.join(PKL_DIR, 'stats_dict.pkl'))
 print("統計辞書を保存しました。")
 
 # ==========================================
@@ -321,13 +328,13 @@ def apply_final_correction_v2(local_df, jockey_efficiency_dict):
 # ==========================================
 def analyze_universal_conditions(local_df, target_year):
     try:
-        encoders = joblib.load('label_encoders.pkl')
+        encoders = joblib.load(os.path.join(PKL_DIR, 'label_encoders.pkl'))
         readable_df = local_df.copy()
         for col, le in encoders.items():
             if col in readable_df.columns:
                 readable_df[col] = le.inverse_transform(readable_df[col])
     except FileNotFoundError:
-        print("警告: label_encoders.pkl が見つかりません。数字のまま分析します。")
+        print(f"警告: {os.path.join(PKL_DIR, 'label_encoders.pkl')} が見つかりません。数字のまま分析します。")
         readable_df = local_df.copy()
 
     if not hasattr(analyze_universal_conditions, "cumulative_missed"):
@@ -456,16 +463,11 @@ lgb_params = {
 # ------------------------------------------
 print("\n--- 【仕込み期間】2010〜2015年のベースモデル構築中 ---")
 
-# 1. 2010〜2015年のデータからエンコーディング前のラベル（文字列）に基づき函館と札幌を逆変換などを考慮して抽出
-# ※ LabelEncoderで変換されているため、元の文字列（ df['場所'] をfitする前の状態またはencodersがある場合はそれを使うが、
-# ここでは一旦エンコード後の数値、もしくはencodersに保存されている「函館」「札幌」のIDを取得して抽出する）
 try:
     le_place = encoders['場所']
-    # クラス名（元の文字列リスト）からインデックスを特定
     hakodate_labels = [i for i, cl in enumerate(le_place.classes_) if '函館' in str(cl)]
     sapporo_labels = [i for i, cl in enumerate(le_place.classes_) if '札幌' in str(cl)]
 except (NameError, KeyError):
-    # 万が一上記で取得できない場合のフォールバック（文字列で直接判定可能な場合）
     hakodate_labels = []
     sapporo_labels = []
 
@@ -476,7 +478,6 @@ df_sapporo = init_base[init_base['場所'].isin(sapporo_labels)]
 n_hakodate = len(df_hakodate)
 n_sapporo = len(df_sapporo)
 
-# 比率が ５：３ (函館：札幌) になるようにサンプリング数を動的に決定
 if (n_hakodate * 3 / 5) <= n_sapporo:
     sample_sapporo_n = int(n_hakodate * 3 / 5)
     sample_hakodate_n = n_hakodate
@@ -487,11 +488,9 @@ else:
 df_h_sampled = df_hakodate.sample(n=sample_hakodate_n, random_state=42) if sample_hakodate_n > 0 else df_hakodate
 df_s_sampled = df_sapporo.sample(n=sample_sapporo_n, random_state=42) if sample_sapporo_n > 0 else df_sapporo
 
-# ５：３に調整したデータを結合し、時系列順に並び替え
 init_train = pd.concat([df_h_sampled, df_s_sampled]).sort_values(by=['年', '月', '日', 'レースキー']).copy()
 print(f"-> 仕込みデータ調整完了（函館: {len(df_h_sampled)}件, 札幌: {len(df_s_sampled)}件）")
 
-# 仕込み期間内での時系列統計量
 stats_frame_course = init_train.groupby('course_frame_key')['着順'].apply(lambda x: (x <= 3).mean())
 stats_course_style = init_train.groupby('course_style_key')['着順'].apply(lambda x: (x <= 3).mean())
 stats_jockey_place_turf_dirt = init_train.groupby('騎手_競馬場_芝ダート')['着順'].apply(lambda x: (x <= 3).mean())
@@ -500,7 +499,6 @@ baseline_rate = (init_train['着順'] <= 3).mean()
 meta_features_pool = []
 meta_target_pool = []
 
-# 仕込み期間（2011〜2015）を1年ずつ擬似ローリングして、初期のメタ学習用データを溜める
 for stage_y in range(2011, 2016):
     stage_tr = init_train[init_train['年'] < stage_y]
     stage_va = init_train[init_train['年'] == stage_y]
@@ -508,7 +506,6 @@ for stage_y in range(2011, 2016):
     
     features_tmp = feat_base + ['course_frame_rate', 'course_style_rate', 'jockey_place_turf_dirt_rate']
     
-    # 特徴量のマッピング処理
     for t_df in [stage_tr, stage_va]:
         t_df['course_frame_rate'] = t_df['course_frame_key'].map(stats_frame_course).fillna(baseline_rate)
         t_df['course_style_rate'] = t_df['course_style_key'].map(stats_course_style).fillna(baseline_rate)
@@ -532,7 +529,6 @@ for stage_y in range(2011, 2016):
     meta_features_pool.append(pd.DataFrame({'r_p': r_p, 'c_p': c_p, 'reg_p': reg_p}))
     meta_target_pool.append((stage_va['着順'] <= 3).astype(int))
 
-# 初期メタモデルの学習
 X_meta_init = pd.concat(meta_features_pool, ignore_index=True)
 y_meta_init = pd.concat(meta_target_pool, ignore_index=True)
 meta_model = lgb.LGBMClassifier(n_estimators=300, learning_rate=0.03, num_leaves=15, min_child_samples=30, random_state=42, objective='binary', **lgb_params_default)
@@ -559,7 +555,7 @@ for target_year in tqdm(years, desc="本番ローリング実行中"):
         })
         jockey_stats['efficiency'] = jockey_stats['着順'] / jockey_stats['単勝'].replace(0, 1)
         jockey_eff_dict = jockey_stats['efficiency'].to_dict()
-    joblib.dump(jockey_eff_dict, 'jockey_efficiency_backtest.pkl')
+    joblib.dump(jockey_eff_dict, os.path.join(PKL_DIR, 'jockey_efficiency_backtest.pkl'))
 
     stats_frame_course = train.groupby('course_frame_key')['着順'].apply(lambda x: (x <= 3).mean())
     stats_course_style = train.groupby('course_style_key')['着順'].apply(lambda x: (x <= 3).mean())
@@ -642,7 +638,7 @@ for target_year in tqdm(years, desc="本番ローリング実行中"):
     test['Model_C'] = (c_p_final * 0.5) + (reg_p_final * 0.5)
     test['Model_D'] = (c_p_final)
     
-    loaded_jockey_eff = joblib.load('jockey_efficiency_backtest.pkl')
+    loaded_jockey_eff = joblib.load(os.path.join(PKL_DIR, 'jockey_efficiency_backtest.pkl'))
     test = apply_jockey_boost_v2(test, loaded_jockey_eff)
     test = apply_final_correction_v2(test, loaded_jockey_eff)
 
@@ -735,19 +731,68 @@ if len(final_valid_jockeys) > 0:
 else:
     final_jockey_eff_dict = {}
 
-joblib.dump(final_jockey_eff_dict, 'jockey_efficiency_final.pkl')
+joblib.dump(final_jockey_eff_dict, os.path.join(PKL_DIR, 'jockey_efficiency_final.pkl'))
 
 # ==========================================
 # 11. 各種オブジェクト・スケーラーの保存
 # ==========================================
-joblib.dump(final_m_rank, 'model_rank.pkl')
-joblib.dump(final_m_class, 'model_class.pkl')
-joblib.dump(final_m_reg, 'model_reg.pkl')
-joblib.dump(final_feats, 'feature_names.pkl') 
-joblib.dump(meta_model, 'meta_model.pkl')
+joblib.dump(final_m_rank, os.path.join(PKL_DIR, 'model_rank.pkl'))
+joblib.dump(final_m_class, os.path.join(PKL_DIR, 'model_class.pkl'))
+joblib.dump(final_m_reg, os.path.join(PKL_DIR, 'model_reg.pkl'))
+joblib.dump(final_feats, os.path.join(PKL_DIR, 'feature_names.pkl')) 
+joblib.dump(meta_model, os.path.join(PKL_DIR, 'meta_model.pkl'))
 
 print("推論用の正規化スケーラーを保存中...")
 r_p_all = final_m_rank.predict(df[final_feats]).reshape(-1, 1)
 c_p_all = final_m_class.predict_proba(df[final_feats])[:, 1].reshape(-1, 1)
 reg_p_all = (-final_m_reg.predict(df[final_feats])).reshape(-1, 1)
 print("すべての工程が完了しました。")
+
+# === 2026年 函館開催（場所コード:02）評価 ===
+# --- Model_A ---
+# 1st_tanshō       23.611111
+# 1st_fukusho      54.166667
+# 2nd_tanshō       19.444444
+# 2nd_fukusho      44.444444
+# 3rd_tanshō       25.000000
+# 3rd_fukusho      62.500000
+# 3renpuku         13.888889
+# 3rentan           0.000000
+# 3renpuku_box4    23.611111
+# 3renpuku_box5    31.944444
+# dtype: float64
+# --- Model_B ---
+# 1st_tanshō       26.388889
+# 1st_fukusho      55.555556
+# 2nd_tanshō       19.444444
+# 2nd_fukusho      43.055556
+# 3rd_tanshō       20.833333
+# 3rd_fukusho      61.111111
+# 3renpuku         13.888889
+# 3rentan           1.388889
+# 3renpuku_box4    23.611111
+# 3renpuku_box5    30.555556
+# dtype: float64
+# --- Model_C ---
+# 1st_tanshō       26.388889
+# 1st_fukusho      55.555556
+# 2nd_tanshō       18.055556
+# 2nd_fukusho      41.666667
+# 3rd_tanshō       25.000000
+# 3rd_fukusho      65.277778
+# 3renpuku         15.277778
+# 3rentan           1.388889
+# 3renpuku_box4    22.222222
+# 3renpuku_box5    30.555556
+# dtype: float64
+# --- Model_D ---
+# 1st_tanshō       26.388889
+# 1st_fukusho      55.555556
+# 2nd_tanshō       20.833333
+# 2nd_fukusho      43.055556
+# 3rd_tanshō       20.833333
+# 3rd_fukusho      62.500000
+# 3renpuku         13.888889
+# 3rentan           1.388889
+# 3renpuku_box4    22.222222
+# 3renpuku_box5    30.555556
